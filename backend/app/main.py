@@ -1,6 +1,10 @@
+import json
+import logging
+import time
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote
-from io import BytesIO
+from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +21,7 @@ from app.services.usage_limits import DailyUsageLimiter
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name)
+logger = logging.getLogger("magic_image_studio.usage")
 
 app.add_middleware(
     CORSMiddleware,
@@ -59,7 +64,7 @@ def get_client_identifier(request: Request) -> str:
     return "anonymous"
 
 
-def validate_image_dimensions(payload: bytes) -> None:
+def validate_image_dimensions(payload: bytes) -> tuple[int, int]:
     try:
         with Image.open(BytesIO(payload)) as image:
             width, height = image.size
@@ -85,38 +90,126 @@ def validate_image_dimensions(payload: bytes) -> None:
             )
         )
 
+    return width, height
+
+
+def log_usage_event(event: dict) -> None:
+    logger.info(json.dumps(event, default=str))
+
 
 @app.post("/generate", response_model=GenerateResponse)
 async def generate_image(request: Request, file: UploadFile = File(...), style: str = Form(...)) -> GenerateResponse:
+    request_id = uuid4().hex
+    started_at = time.perf_counter()
+    client_ip = get_client_identifier(request)
+    base_event = {
+        "event_type": "image_generation",
+        "request_id": request_id,
+        "client_ip": client_ip,
+        "style_selected": style,
+        "original_filename": file.filename or "upload.png",
+        "content_type": file.content_type,
+        "origin": request.headers.get("origin"),
+        "user_agent": request.headers.get("user-agent"),
+        "vertex_enabled": settings.vertex_enabled,
+        "demo_mode": settings.demo_mode,
+        "model_name": settings.vertex_model,
+    }
+
     if not file.content_type or not file.content_type.startswith("image/"):
+        log_usage_event(
+            {
+                **base_event,
+                "status": "failed",
+                "error_message": "Please upload a valid image file.",
+                "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
+            }
+        )
         raise HTTPException(status_code=400, detail="Please upload a valid image file.")
 
     payload = await file.read()
     if not payload:
+        log_usage_event(
+            {
+                **base_event,
+                "status": "failed",
+                "file_size_bytes": 0,
+                "error_message": "The uploaded file is empty.",
+                "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
+            }
+        )
         raise HTTPException(status_code=400, detail="The uploaded file is empty.")
 
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
     if len(payload) > max_bytes:
+        log_usage_event(
+            {
+                **base_event,
+                "status": "failed",
+                "file_size_bytes": len(payload),
+                "error_message": f"File is too large. The limit is {settings.max_upload_size_mb} MB.",
+                "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
+            }
+        )
         raise HTTPException(
             status_code=413,
             detail=f"File is too large. The limit is {settings.max_upload_size_mb} MB."
         )
 
-    validate_image_dimensions(payload)
+    try:
+        width, height = validate_image_dimensions(payload)
+    except HTTPException as error:
+        log_usage_event(
+            {
+                **base_event,
+                "status": "failed",
+                "file_size_bytes": len(payload),
+                "error_message": error.detail,
+                "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
+            }
+        )
+        raise
 
     try:
         prompt = get_style_prompt(style)
     except ValueError as error:
+        log_usage_event(
+            {
+                **base_event,
+                "status": "failed",
+                "file_size_bytes": len(payload),
+                "image_width": width,
+                "image_height": height,
+                "error_message": str(error),
+                "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
+            }
+        )
         raise HTTPException(status_code=400, detail=str(error)) from error
 
-    usage_decision = usage_limiter.consume(get_client_identifier(request))
+    usage_decision = usage_limiter.consume(client_ip)
     if not usage_decision.allowed:
+        limit_message = (
+            f"Daily limit reached. You can generate up to {usage_decision.daily_limit} "
+            "images per day without signing in."
+        )
+        log_usage_event(
+            {
+                **base_event,
+                "status": "blocked",
+                "file_size_bytes": len(payload),
+                "image_width": width,
+                "image_height": height,
+                "prompt": prompt,
+                "used_today": usage_decision.used_today,
+                "remaining_generations": usage_decision.remaining_generations,
+                "daily_limit": usage_decision.daily_limit,
+                "error_message": limit_message,
+                "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
+            }
+        )
         raise HTTPException(
             status_code=429,
-            detail=(
-                f"Daily limit reached. You can generate up to {usage_decision.daily_limit} "
-                "images per day without signing in."
-            )
+            detail=limit_message
         )
 
     original_asset = storage_service.save_bytes(
@@ -135,8 +228,41 @@ async def generate_image(request: Request, file: UploadFile = File(...), style: 
             content_type=file.content_type
         )
     except NotImplementedError as error:
+        log_usage_event(
+            {
+                **base_event,
+                "status": "failed",
+                "file_size_bytes": len(payload),
+                "image_width": width,
+                "image_height": height,
+                "prompt": prompt,
+                "used_today": usage_decision.used_today,
+                "remaining_generations": usage_decision.remaining_generations,
+                "daily_limit": usage_decision.daily_limit,
+                "stored_input_path": original_asset.path,
+                "error_message": str(error),
+                "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
+            }
+        )
         raise HTTPException(status_code=501, detail=str(error)) from error
     except Exception as error:
+        error_message = f"Transformation failed: {error}"
+        log_usage_event(
+            {
+                **base_event,
+                "status": "failed",
+                "file_size_bytes": len(payload),
+                "image_width": width,
+                "image_height": height,
+                "prompt": prompt,
+                "used_today": usage_decision.used_today,
+                "remaining_generations": usage_decision.remaining_generations,
+                "daily_limit": usage_decision.daily_limit,
+                "stored_input_path": original_asset.path,
+                "error_message": error_message,
+                "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
+            }
+        )
         raise HTTPException(status_code=500, detail=f"Transformation failed: {error}") from error
 
     result_asset = storage_service.save_bytes(
@@ -144,6 +270,26 @@ async def generate_image(request: Request, file: UploadFile = File(...), style: 
         original_filename=transform_result.filename,
         content_type=transform_result.content_type,
         prefix=settings.result_prefix
+    )
+
+    log_usage_event(
+        {
+            **base_event,
+            "status": "success",
+            "file_size_bytes": len(payload),
+            "image_width": width,
+            "image_height": height,
+            "prompt": prompt,
+            "used_today": usage_decision.used_today,
+            "remaining_generations": usage_decision.remaining_generations,
+            "daily_limit": usage_decision.daily_limit,
+            "stored_input_path": original_asset.path,
+            "stored_output_path": result_asset.path,
+            "output_filename": Path(result_asset.path).name,
+            "output_content_type": result_asset.content_type,
+            "storage_mode": result_asset.storage_mode,
+            "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
+        }
     )
 
     return GenerateResponse(

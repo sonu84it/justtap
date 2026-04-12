@@ -113,6 +113,30 @@ Until authentication is added, JustTap limits how many images a user can generat
 
 This is a practical MVP safeguard, not a strict anti-abuse system. Once login is added, the same limit can move to per-user tracking.
 
+## Usage Reporting
+
+Every `/generate` request now writes a structured JSON usage event to application logs. These events are designed for Cloud Logging and can be routed to BigQuery later if you want dashboards or long-term reporting.
+
+Tracked fields include:
+
+- `request_id`
+- `timestamp` from the Cloud Logging entry
+- `client_ip`
+- `style_selected`
+- `status` such as `success`, `failed`, or `blocked`
+- `error_message`
+- `original_filename`
+- `file_size_bytes`
+- `image_width` and `image_height`
+- `prompt`
+- `stored_input_path`
+- `stored_output_path`
+- `output_filename`
+- `used_today`, `remaining_generations`, and `daily_limit`
+- `origin`, `user_agent`, `demo_mode`, `vertex_enabled`, and `model_name`
+
+This makes it much easier to answer questions like which styles are most used, which IPs hit limits, which failures are most common, and which storage objects belong to each request.
+
 ## Image Guardrails
 
 To control storage and future model costs, the backend rejects oversized uploads before processing:
