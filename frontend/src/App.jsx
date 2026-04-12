@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { generateMagicImage } from "./lib/api";
+import { fetchHealth, generateMagicImage } from "./lib/api";
 
-// --- Constants ---
 const STYLE_OPTIONS = [
   { id: "magic", label: "Magic", accent: "Aurora glow", icon: "✨" },
   { id: "viral", label: "Viral", accent: "Social-ready pop", icon: "🔥" },
@@ -10,41 +9,105 @@ const STYLE_OPTIONS = [
   { id: "meme", label: "Meme", accent: "Internet chaos", icon: "🤡" }
 ];
 
-// --- Icons (Inline SVGs for portability) ---
+const PREVIEW_TABS = [
+  { id: "before", label: "Original" },
+  { id: "after", label: "Result" }
+];
+
 const UploadIcon = () => (
-  <svg className="w-8 h-8 text-neutral-400 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+  <svg className="mb-2 h-6 w-6 text-neutral-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
   </svg>
 );
 
 const DownloadIcon = () => (
-  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+  <svg className="mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
   </svg>
 );
 
-const SparklesIcon = () => (
-  <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+const SparklesIcon = ({ className = "mr-2 h-5 w-5" }) => (
+  <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
   </svg>
 );
 
-// --- Main Application ---
+function PreviewPanel({ title, imageUrl, emptyCopy, loading = false, action = null }) {
+  return (
+    <section className="flex min-h-[250px] flex-1 flex-col overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03] shadow-[0_24px_80px_rgba(0,0,0,0.35)] lg:min-h-0">
+      <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+        <span className="text-xs font-semibold uppercase tracking-[0.24em] text-neutral-400">{title}</span>
+        {action}
+      </div>
+      <div className="relative flex flex-1 items-center justify-center bg-[radial-gradient(circle_at_top,_rgba(139,92,246,0.12),_transparent_45%),linear-gradient(180deg,_rgba(255,255,255,0.02),_rgba(255,255,255,0.01))] p-4 lg:p-5">
+        {loading ? (
+          <div className="flex flex-col items-center gap-4 text-center">
+            <div className="h-16 w-16 animate-spin rounded-full border-4 border-white/10 border-t-violet-400" />
+            <div>
+              <p className="font-medium text-violet-300">Crafting your new look</p>
+              <p className="mt-1 text-sm text-neutral-500">This usually takes a few seconds.</p>
+            </div>
+          </div>
+        ) : imageUrl ? (
+          <img src={imageUrl} alt={title} className="max-h-[42vh] w-auto rounded-2xl object-contain shadow-2xl lg:max-h-[calc(100vh-17rem)]" />
+        ) : (
+          <div className="max-w-[18rem] text-center text-sm text-neutral-500">{emptyCopy}</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export default function App() {
   const fileInputRef = useRef(null);
+  const beforeObjectUrlRef = useRef("");
   const [selectedStyle, setSelectedStyle] = useState("magic");
   const [selectedFile, setSelectedFile] = useState(null);
   const [beforeUrl, setBeforeUrl] = useState("");
   const [afterUrl, setAfterUrl] = useState("");
   const [resultName, setResultName] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [successMessage, setSuccessMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [activePreview, setActivePreview] = useState("before");
+  const [usageInfo, setUsageInfo] = useState({
+    dailyLimit: 10,
+    remainingGenerations: 10,
+    usedToday: 0
+  });
 
-  // Cleanup object URLs to avoid memory leaks
   useEffect(() => {
     return () => {
-      if (beforeUrl) URL.revokeObjectURL(beforeUrl);
-      if (afterUrl) URL.revokeObjectURL(afterUrl);
+      if (beforeObjectUrlRef.current) {
+        URL.revokeObjectURL(beforeObjectUrlRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    let isActive = true;
+
+    async function loadHealth() {
+      try {
+        const health = await fetchHealth();
+        if (!isActive) {
+          return;
+        }
+
+        setUsageInfo((current) => ({
+          dailyLimit: health.daily_generation_limit ?? current.dailyLimit,
+          remainingGenerations: health.daily_generation_limit ?? current.remainingGenerations,
+          usedToday: current.usedToday
+        }));
+      } catch {
+        // Keep UI usable even if the backend does not expose health metadata yet.
+      }
+    }
+
+    loadHealth();
+
+    return () => {
+      isActive = false;
     };
   }, []);
 
@@ -53,33 +116,43 @@ export default function App() {
     [selectedFile, selectedStyle, isLoading]
   );
 
+  const selectedStyleMeta = STYLE_OPTIONS.find((style) => style.id === selectedStyle) ?? STYLE_OPTIONS[0];
+
   const handleFileChange = (event) => {
     const file = event.target.files?.[0];
-    if (!file) return;
-
-    if (!file.type.startsWith("image/")) {
-      setErrorMessage("Please choose a valid image file (PNG, JPG, WEBP).");
+    if (!file) {
       return;
     }
 
-    if (beforeUrl) URL.revokeObjectURL(beforeUrl);
+    if (!file.type.startsWith("image/")) {
+      setErrorMessage("Please choose a valid image file in PNG, JPG, or WEBP format.");
+      return;
+    }
 
+    if (beforeObjectUrlRef.current) {
+      URL.revokeObjectURL(beforeObjectUrlRef.current);
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+    beforeObjectUrlRef.current = objectUrl;
     setSelectedFile(file);
-    setBeforeUrl(URL.createObjectURL(file));
+    setBeforeUrl(objectUrl);
     setAfterUrl("");
     setResultName("");
     setErrorMessage("");
-  };
-
-  const handleBrowseClick = () => {
-    fileInputRef.current?.click();
+    setSuccessMessage("");
+    setActivePreview("before");
   };
 
   const handleGenerate = async () => {
-    if (!selectedFile) return;
+    if (!selectedFile) {
+      return;
+    }
 
     setIsLoading(true);
     setErrorMessage("");
+    setSuccessMessage("");
+    setActivePreview("after");
 
     try {
       const payload = await generateMagicImage({
@@ -89,6 +162,18 @@ export default function App() {
 
       setAfterUrl(payload.result_image_url);
       setResultName(payload.output_filename || "justtap-result.png");
+      setUsageInfo((current) => {
+        const nextUsedToday = payload.used_today ?? current.usedToday + 1;
+        const nextDailyLimit = payload.daily_limit ?? current.dailyLimit;
+        const nextRemaining = payload.remaining_generations ?? Math.max(nextDailyLimit - nextUsedToday, 0);
+
+        return {
+          dailyLimit: nextDailyLimit,
+          remainingGenerations: nextRemaining,
+          usedToday: nextUsedToday
+        };
+      });
+      setSuccessMessage(payload.message || "Your image is ready to download.");
     } catch (error) {
       setErrorMessage(error.message || "Something went wrong.");
     } finally {
@@ -96,189 +181,194 @@ export default function App() {
     }
   };
 
+  const visibleMobileImage = activePreview === "after" ? afterUrl : beforeUrl;
+  const visibleMobileCopy = activePreview === "after"
+    ? "Your transformed result will appear here after generation."
+    : "Upload a photo to preview it here before generating.";
+
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-50 font-sans selection:bg-violet-500/30">
-      <nav className="sticky top-0 z-50 border-b border-neutral-900 bg-neutral-950/50 backdrop-blur-md">
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-violet-600 to-fuchsia-600">
-              <SparklesIcon />
-            </div>
-            <span className="text-xl font-bold tracking-tight">JustTap</span>
-          </div>
-          <div className="rounded-full border border-neutral-800 bg-neutral-900 px-3 py-1 text-sm font-medium text-neutral-500">
-            Beta Mode
-          </div>
-        </div>
-      </nav>
-
-      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        <div className="mb-10 max-w-2xl">
-          <h1 className="mb-4 text-4xl font-extrabold tracking-tight sm:text-5xl">
-            No prompts.<br />
-            <span className="bg-gradient-to-r from-violet-400 to-fuchsia-400 bg-clip-text text-transparent">
-              Just one word.
-            </span>
-          </h1>
-          <p className="text-lg leading-relaxed text-neutral-400">
-            Upload your photo, choose a vibe, and let AI do the rest.
-            No complicated tools, no learning curve. Just simple, powerful magic.
-          </p>
-        </div>
-
-        <div className="flex flex-col items-start gap-8 lg:flex-row lg:gap-12">
-          <div className="sticky top-24 flex w-full flex-col gap-8 lg:w-1/3">
-            <section>
-              <div className="mb-3 flex items-center gap-2">
-                <div className="flex h-6 w-6 items-center justify-center rounded-full bg-neutral-800 text-xs font-bold text-neutral-300">1</div>
-                <h2 className="text-sm font-semibold uppercase tracking-wider text-neutral-300">Upload Image</h2>
+    <div className="min-h-screen bg-[#050816] text-neutral-50 selection:bg-violet-500/30 lg:h-screen lg:overflow-hidden">
+      <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-4 sm:px-5 sm:py-5 lg:h-screen lg:min-h-0 lg:px-6 lg:py-4">
+        <header className="mb-3 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 backdrop-blur sm:px-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white shadow-[0_14px_40px_rgba(139,92,246,0.35)]">
+                <SparklesIcon className="h-5 w-5" />
               </div>
+              <div>
+                <p className="text-lg font-semibold tracking-tight">JustTap</p>
+                <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">One-word image styling</p>
+                <h1 className="mt-2 text-lg font-semibold tracking-tight text-neutral-50 sm:text-xl">
+                  Turn any photo into one-tap magic.
+                </h1>
+                <p className="mt-1 max-w-2xl text-sm leading-5 text-neutral-400">
+                  Upload once, choose a vibe, and create polished one-tap magic without writing prompts or learning complex tools.
+                </p>
+              </div>
+            </div>
+            <div className="shrink-0 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-right text-xs font-medium text-neutral-300">
+              <p className="uppercase tracking-[0.18em] text-neutral-500">Usage today</p>
+              <p className="mt-1 text-sm font-semibold text-neutral-100">
+                {usageInfo.remainingGenerations} of {usageInfo.dailyLimit} left
+              </p>
+            </div>
+          </div>
+        </header>
 
+        <main className="grid flex-1 gap-3 lg:min-h-0 lg:grid-cols-[340px_minmax(0,1fr)] lg:overflow-hidden">
+          <section className="flex flex-col rounded-[28px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] p-4 shadow-[0_30px_100px_rgba(0,0,0,0.4)] sm:p-5 lg:min-h-0 lg:overflow-hidden">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
               <button
-                onClick={handleBrowseClick}
-                className={`group relative flex w-full flex-col items-center justify-center rounded-2xl border-2 border-dashed p-8 text-center transition-all duration-200 ease-out ${
+                onClick={() => fileInputRef.current?.click()}
+                className={`flex min-h-[96px] flex-col items-center justify-center rounded-3xl border border-dashed px-4 py-4 text-center transition-all ${
                   selectedFile
-                    ? "border-violet-500/50 bg-violet-500/5"
-                    : "border-neutral-800 hover:border-neutral-600 hover:bg-neutral-900/50"
+                    ? "border-violet-400/50 bg-violet-500/10"
+                    : "border-white/15 bg-white/[0.03] hover:border-white/30 hover:bg-white/[0.05]"
                 }`}
               >
                 <UploadIcon />
-                <span className="mb-1 text-sm font-medium text-neutral-200">
-                  {selectedFile ? selectedFile.name : "Click or drag to upload"}
-                </span>
-                <span className="text-xs text-neutral-500">
-                  {selectedFile ? "Click to replace image" : "Supports PNG, JPG, WEBP"}
-                </span>
+                <p className="text-[13px] font-semibold text-neutral-100">
+                  {selectedFile ? selectedFile.name : "Upload your image"}
+                </p>
+                <p className="mt-0.5 text-[11px] text-neutral-500">
+                  {selectedFile ? "Tap to replace it" : "PNG, JPG, and WEBP are supported"}
+                </p>
               </button>
-              <input
-                ref={fileInputRef}
-                className="hidden"
-                type="file"
-                accept="image/*"
-                onChange={handleFileChange}
-              />
-            </section>
 
-            <section>
-              <div className="mb-3 flex items-center gap-2">
-                <div className="flex h-6 w-6 items-center justify-center rounded-full bg-neutral-800 text-xs font-bold text-neutral-300">2</div>
-                <h2 className="text-sm font-semibold uppercase tracking-wider text-neutral-300">Select Vibe</h2>
+              <div className="rounded-3xl border border-white/10 bg-black/20 p-3.5">
+                <div className="mb-2 flex items-center justify-between">
+                  <p className="text-[13px] font-semibold text-neutral-100">Choose a vibe</p>
+                  <p className="text-[11px] text-neutral-500">One word only</p>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {STYLE_OPTIONS.map((style) => (
+                    <button
+                      key={style.id}
+                      onClick={() => setSelectedStyle(style.id)}
+                      className={`rounded-2xl border px-3 py-2.5 text-left transition-all ${
+                        selectedStyle === style.id
+                          ? "border-violet-400 bg-violet-500/10 text-violet-100"
+                          : "border-white/10 bg-white/[0.03] text-neutral-200 hover:border-white/20 hover:bg-white/[0.06]"
+                      }`}
+                    >
+                      <p className="text-base">{style.icon}</p>
+                      <p className="mt-1.5 text-[13px] font-semibold">{style.label}</p>
+                      <p className="mt-0.5 text-[10px] leading-4 text-neutral-500">{style.accent}</p>
+                    </button>
+                  ))}
+                </div>
               </div>
+            </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                {STYLE_OPTIONS.map((style) => (
+            <input
+              ref={fileInputRef}
+              className="hidden"
+              type="file"
+              accept="image/*"
+              onChange={handleFileChange}
+            />
+
+            {(errorMessage || successMessage) && (
+              <div
+                className={`mt-4 rounded-2xl border px-4 py-3 text-sm ${
+                  errorMessage
+                    ? "border-red-500/25 bg-red-500/10 text-red-300"
+                    : "border-emerald-500/25 bg-emerald-500/10 text-emerald-300"
+                }`}
+              >
+                {errorMessage || successMessage}
+              </div>
+            )}
+
+            <button
+              onClick={handleGenerate}
+              disabled={!canGenerate}
+              className={`mt-3 flex items-center justify-center rounded-2xl px-5 py-3.5 text-sm font-semibold transition-all ${
+                canGenerate
+                  ? "bg-white text-neutral-950 shadow-[0_18px_45px_rgba(255,255,255,0.18)] hover:-translate-y-0.5"
+                  : "cursor-not-allowed border border-white/10 bg-white/[0.06] text-neutral-500"
+              }`}
+            >
+              {isLoading ? (
+                <>
+                  <span className="mr-3 inline-block h-5 w-5 animate-spin rounded-full border-2 border-neutral-400 border-t-neutral-900" />
+                  Generating your image
+                </>
+              ) : (
+                <>
+                  <SparklesIcon />
+                  Generate {selectedStyleMeta.label}
+                </>
+              )}
+            </button>
+          </section>
+
+          <section className="flex min-h-0 flex-col rounded-[28px] border border-white/10 bg-white/[0.03] p-4 shadow-[0_30px_100px_rgba(0,0,0,0.4)] sm:p-5 lg:overflow-hidden">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs uppercase tracking-[0.3em] text-neutral-500">Preview studio</p>
+                <h2 className="mt-1 text-xl font-semibold tracking-tight">Original and result, side by side</h2>
+              </div>
+              <div className="inline-flex rounded-full border border-white/10 bg-black/20 p-1 lg:hidden">
+                {PREVIEW_TABS.map((tab) => (
                   <button
-                    key={style.id}
-                    onClick={() => setSelectedStyle(style.id)}
-                    className={`flex flex-col items-start rounded-xl border p-4 text-left transition-all duration-200 ${
-                      selectedStyle === style.id
-                        ? "border-violet-500 bg-violet-500/10 shadow-[0_0_15px_rgba(139,92,246,0.15)]"
-                        : "border-neutral-800 bg-neutral-900/40 hover:border-neutral-700 hover:bg-neutral-800/50"
+                    key={tab.id}
+                    onClick={() => setActivePreview(tab.id)}
+                    className={`rounded-full px-4 py-2 text-sm transition ${
+                      activePreview === tab.id ? "bg-white text-neutral-950" : "text-neutral-400"
                     }`}
                   >
-                    <span className="mb-2 text-xl">{style.icon}</span>
-                    <span className={`mb-0.5 text-sm font-semibold ${selectedStyle === style.id ? "text-violet-300" : "text-neutral-200"}`}>
-                      {style.label}
-                    </span>
-                    <span className="w-full truncate text-xs text-neutral-500">{style.accent}</span>
+                    {tab.label}
                   </button>
                 ))}
               </div>
-            </section>
-
-            <div className="border-t border-neutral-900 pt-4">
-              {errorMessage && (
-                <div className="mb-4 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-400">
-                  {errorMessage}
-                </div>
-              )}
-
-              <button
-                onClick={handleGenerate}
-                disabled={!canGenerate}
-                className={`flex w-full items-center justify-center rounded-xl px-6 py-4 text-lg font-bold transition-all duration-300 ${
-                  canGenerate
-                    ? "bg-neutral-50 text-neutral-950 shadow-[0_0_20px_rgba(255,255,255,0.15)] hover:scale-[1.02]"
-                    : "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-600"
-                }`}
-              >
-                {isLoading ? (
-                  <span className="flex items-center">
-                    <svg className="-ml-1 mr-3 h-5 w-5 animate-spin text-neutral-500" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    Generating...
-                  </span>
-                ) : (
-                  <span className="flex items-center">
-                    <SparklesIcon />
-                    Generate Magic
-                  </span>
-                )}
-              </button>
-            </div>
-          </div>
-
-          <div className="flex w-full flex-col gap-6 lg:w-2/3">
-            <div className="flex min-h-[300px] w-full flex-col overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900">
-              <div className="flex items-center justify-between border-b border-neutral-800 bg-neutral-900/80 px-4 py-3">
-                <span className="text-xs font-semibold uppercase tracking-wider text-neutral-500">Original Upload</span>
-              </div>
-              <div className="flex flex-1 items-center justify-center bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGNpcmNsZSBjeD0iMiIgY3k9IjIiIHI9IjIiIGZpbGw9IiMzMzMiLz48L3N2Zz4=')] p-4">
-                {beforeUrl ? (
-                  <img src={beforeUrl} alt="Original" className="max-h-[500px] w-auto rounded-lg object-contain shadow-2xl" />
-                ) : (
-                  <div className="flex flex-col items-center text-sm text-neutral-600">
-                    <svg className="mb-3 h-12 w-12 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-                    Waiting for image...
-                  </div>
-                )}
-              </div>
             </div>
 
-            <div className="group relative flex min-h-[400px] w-full flex-col overflow-hidden rounded-2xl border border-neutral-800">
-              {afterUrl && !isLoading && (
-                <div className="pointer-events-none absolute inset-0 -z-10 bg-gradient-to-r from-violet-500/20 to-fuchsia-500/20 blur-xl"></div>
-              )}
-
-              <div className="z-10 flex items-center justify-between border-b border-neutral-800 bg-neutral-900/90 px-4 py-3">
-                <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-violet-400">
-                  <SparklesIcon /> Result
-                </span>
-
-                {afterUrl && (
+            <div className="hidden flex-1 gap-3 lg:grid lg:grid-cols-2 lg:min-h-0">
+              <PreviewPanel
+                title="Original"
+                imageUrl={beforeUrl}
+                emptyCopy="Upload an image to preview the source photo here."
+              />
+              <PreviewPanel
+                title="Result"
+                imageUrl={afterUrl}
+                loading={isLoading}
+                emptyCopy="Choose a style and generate to see the transformed image here."
+                action={afterUrl ? (
                   <a
                     href={afterUrl}
                     download={resultName}
-                    className="flex items-center rounded-md bg-white px-3 py-1.5 text-xs font-semibold text-black transition-colors hover:bg-neutral-200"
+                    className="inline-flex items-center rounded-full bg-white px-3 py-2 text-xs font-semibold text-neutral-950 transition hover:bg-neutral-200"
                   >
-                    <DownloadIcon /> Download
+                    <DownloadIcon />
+                    Download
                   </a>
-                )}
-              </div>
-
-              <div className="relative z-0 flex flex-1 items-center justify-center overflow-hidden bg-[#0a0a0a] p-4">
-                {isLoading ? (
-                  <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-neutral-900/50 backdrop-blur-sm">
-                    <div className="mb-4 h-16 w-16 animate-spin rounded-full border-4 border-neutral-800 border-t-violet-500"></div>
-                    <p className="animate-pulse font-medium text-violet-400">Applying {selectedStyle} magic...</p>
-                  </div>
-                ) : afterUrl ? (
-                  <img src={afterUrl} alt="Transformed Result" className="max-h-[600px] w-auto animate-in rounded-lg object-contain shadow-2xl fade-in duration-700" />
-                ) : (
-                  <div className="flex max-w-xs flex-col items-center text-center text-sm text-neutral-600">
-                    <div className="mb-4 flex h-16 w-16 -rotate-6 items-center justify-center rounded-2xl border border-neutral-800 bg-neutral-900">
-                      <SparklesIcon />
-                    </div>
-                    <p>Your AI-transformed image will appear here instantly.</p>
-                  </div>
-                )}
-              </div>
+                ) : null}
+              />
             </div>
-          </div>
-        </div>
-      </main>
+
+            <div className="flex flex-1 lg:hidden">
+              <PreviewPanel
+                title={activePreview === "after" ? "Result" : "Original"}
+                imageUrl={visibleMobileImage}
+                loading={activePreview === "after" && isLoading}
+                emptyCopy={visibleMobileCopy}
+                action={activePreview === "after" && afterUrl ? (
+                  <a
+                    href={afterUrl}
+                    download={resultName}
+                    className="inline-flex items-center rounded-full bg-white px-3 py-2 text-xs font-semibold text-neutral-950 transition hover:bg-neutral-200"
+                  >
+                    <DownloadIcon />
+                    Download
+                  </a>
+                ) : null}
+              />
+            </div>
+          </section>
+        </main>
+      </div>
     </div>
   );
 }

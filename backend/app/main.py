@@ -1,16 +1,19 @@
 from pathlib import Path
 from urllib.parse import quote
+from io import BytesIO
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from PIL import Image, UnidentifiedImageError
 
 from app.config import get_settings
 from app.models import GenerateResponse, HealthResponse
 from app.prompts import get_style_prompt
 from app.services.image_transform import get_transform_service
 from app.services.storage import StorageService
+from app.services.usage_limits import DailyUsageLimiter
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name)
@@ -25,11 +28,16 @@ app.add_middleware(
 
 storage_service = StorageService(settings)
 transform_service = get_transform_service(settings)
+usage_limiter = DailyUsageLimiter(settings)
 
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check() -> HealthResponse:
-    return HealthResponse(status="ok", demo_mode=settings.demo_mode)
+    return HealthResponse(
+        status="ok",
+        demo_mode=settings.demo_mode,
+        daily_generation_limit=settings.daily_generation_limit
+    )
 
 
 def build_asset_url(request: Request, asset_path: str, inline_url: str | None, storage_mode: str) -> str:
@@ -38,6 +46,44 @@ def build_asset_url(request: Request, asset_path: str, inline_url: str | None, s
 
     base_url = str(request.base_url).rstrip("/")
     return f"{base_url}/files/{quote(asset_path, safe='/')}"
+
+
+def get_client_identifier(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for", "")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+
+    if request.client and request.client.host:
+        return request.client.host
+
+    return "anonymous"
+
+
+def validate_image_dimensions(payload: bytes) -> None:
+    try:
+        with Image.open(BytesIO(payload)) as image:
+            width, height = image.size
+    except UnidentifiedImageError as error:
+        raise HTTPException(status_code=400, detail="The uploaded file is not a supported image.") from error
+
+    megapixels = (width * height) / 1_000_000
+    if width > settings.max_image_width or height > settings.max_image_height:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Image dimensions are too large. Maximum allowed size is "
+                f"{settings.max_image_width}x{settings.max_image_height} pixels."
+            )
+        )
+
+    if megapixels > settings.max_image_megapixels:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Image resolution is too high. Maximum allowed resolution is "
+                f"{settings.max_image_megapixels} megapixels."
+            )
+        )
 
 
 @app.post("/generate", response_model=GenerateResponse)
@@ -56,10 +102,22 @@ async def generate_image(request: Request, file: UploadFile = File(...), style: 
             detail=f"File is too large. The limit is {settings.max_upload_size_mb} MB."
         )
 
+    validate_image_dimensions(payload)
+
     try:
         prompt = get_style_prompt(style)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+    usage_decision = usage_limiter.consume(get_client_identifier(request))
+    if not usage_decision.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Daily limit reached. You can generate up to {usage_decision.daily_limit} "
+                "images per day without signing in."
+            )
+        )
 
     original_asset = storage_service.save_bytes(
         payload,
@@ -96,7 +154,10 @@ async def generate_image(request: Request, file: UploadFile = File(...), style: 
         result_image_url=build_asset_url(request, result_asset.path, result_asset.url, result_asset.storage_mode),
         output_filename=Path(result_asset.path).name,
         content_type=result_asset.content_type,
-        storage_mode=result_asset.storage_mode
+        storage_mode=result_asset.storage_mode,
+        daily_limit=usage_decision.daily_limit,
+        used_today=usage_decision.used_today,
+        remaining_generations=usage_decision.remaining_generations
     )
 
 

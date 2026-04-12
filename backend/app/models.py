@@ -4,6 +4,7 @@ from pydantic import BaseModel
 class HealthResponse(BaseModel):
     status: str
     demo_mode: bool
+    daily_generation_limit: int
 
 
 class GenerateResponse(BaseModel):
@@ -15,3 +16,6 @@ class GenerateResponse(BaseModel):
     output_filename: str
     content_type: str
     storage_mode: str
+    daily_limit: int
+    used_today: int
+    remaining_generations: int

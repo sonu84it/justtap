@@ -3,3 +3,5 @@ uvicorn[standard]==0.32.0
 python-multipart==0.0.17
 google-cloud-storage==2.18.2
 pydantic-settings==2.6.1
+Pillow==11.2.1
+google-cloud-aiplatform>=1.114.0,<2.0.0

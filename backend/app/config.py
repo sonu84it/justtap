@@ -9,10 +9,14 @@ class Settings(BaseSettings):
     app_name: str = "Magic Image Studio API"
     app_env: str = "development"
     demo_mode: bool = True
+    daily_generation_limit: int = 10
     frontend_dist_dir: str = str(Path(__file__).resolve().parents[2] / "frontend" / "dist")
     upload_prefix: str = "uploads"
     result_prefix: str = "results"
-    max_upload_size_mb: int = 15
+    max_upload_size_mb: int = 5
+    max_image_width: int = 2048
+    max_image_height: int = 2048
+    max_image_megapixels: int = 12
     allowed_origins: list[str] = Field(
         default_factory=lambda: [
             "http://localhost:5173",
@@ -26,7 +30,15 @@ class Settings(BaseSettings):
     google_cloud_project: str | None = None
     vertex_enabled: bool = False
     vertex_location: str = "us-central1"
-    vertex_model: str = "imagegeneration@006"
+    vertex_model: str = "imagen-3.0-capability-001"
+    vertex_output_mime_type: str = "image/png"
+    vertex_guidance_scale: float = 18.0
+    vertex_negative_prompt: str = (
+        "blurry, distorted, low quality, extra limbs, duplicated features, warped face, "
+        "unreadable text, watermark, logo, frame"
+    )
+    vertex_safety_filter_level: str = "block_some"
+    vertex_person_generation: str = "allow_adult"
 
     model_config = SettingsConfigDict(
         env_file=".env",
