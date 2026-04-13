@@ -122,11 +122,16 @@ def log_usage_event(event: dict) -> None:
     logger.info(json.dumps(event, default=str))
 
 
+def resolve_guidance_scale(style: str) -> float:
+    return settings.vertex_guidance_scales.get(style, settings.vertex_guidance_scale)
+
+
 @app.post("/generate", response_model=GenerateResponse)
 async def generate_image(request: Request, file: UploadFile = File(...), style: str = Form(...)) -> GenerateResponse:
     request_id = uuid4().hex
     started_at = time.perf_counter()
     client_ip = get_client_identifier(request)
+    guidance_scale = resolve_guidance_scale(style)
     base_event = {
         "event_type": "image_generation",
         "request_id": request_id,
@@ -139,6 +144,7 @@ async def generate_image(request: Request, file: UploadFile = File(...), style: 
         "vertex_enabled": settings.vertex_enabled,
         "demo_mode": settings.demo_mode,
         "model_name": settings.vertex_model,
+        "guidance_scale": guidance_scale,
     }
 
     if not file.content_type or not file.content_type.startswith("image/"):

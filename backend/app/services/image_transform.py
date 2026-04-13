@@ -2,10 +2,13 @@ import os
 import tempfile
 from dataclasses import dataclass
 from io import BytesIO
+import logging
 
 from PIL import Image as PilImage
 
 from app.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -78,11 +81,15 @@ class VertexAITransformService:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
+    def _resolve_guidance_scale(self, style: str) -> float:
+        return self.settings.vertex_guidance_scales.get(style, self.settings.vertex_guidance_scale)
+
     def transform(self, *, image_bytes: bytes, prompt: str, style: str, filename: str, content_type: str) -> TransformResult:
         from vertexai.preview.vision_models import RawReferenceImage
 
         model = self._get_model()
         base_image, prepared_content_type = self._prepare_base_image(image_bytes, content_type)
+        guidance_scale = self._resolve_guidance_scale(style)
         reference_images = [
             RawReferenceImage(
                 reference_id=0,
@@ -90,13 +97,22 @@ class VertexAITransformService:
             )
         ]
 
+        logger.info(
+            "Vertex image transform requested",
+            extra={
+                "style": style,
+                "guidance_scale": guidance_scale,
+                "model_name": self.settings.vertex_model,
+            }
+        )
+
         response = model.edit_image(
             base_image=base_image,
             reference_images=reference_images,
             prompt=prompt,
             negative_prompt=self.settings.vertex_negative_prompt,
             number_of_images=1,
-            guidance_scale=self.settings.vertex_guidance_scale,
+            guidance_scale=guidance_scale,
             output_mime_type=self.settings.vertex_output_mime_type,
             safety_filter_level=self.settings.vertex_safety_filter_level,
             person_generation=self.settings.vertex_person_generation

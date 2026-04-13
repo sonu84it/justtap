@@ -33,6 +33,15 @@ class Settings(BaseSettings):
     vertex_model: str = "imagen-3.0-capability-001"
     vertex_output_mime_type: str = "image/png"
     vertex_guidance_scale: float = 18.0
+    vertex_guidance_scales: dict[str, float] = Field(
+        default_factory=lambda: {
+            "cinematic": 15.0,
+            "magic": 16.0,
+            "viral": 18.0,
+            "fantasy": 19.0,
+            "meme": 19.0,
+        }
+    )
     vertex_negative_prompt: str = (
         "blurry, distorted, low quality, extra limbs, duplicated features, warped face, "
         "unreadable text, watermark, logo, frame"
