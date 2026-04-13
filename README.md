@@ -2,7 +2,7 @@
 
 JustTap is a full-stack MVP for one-tap AI image styling. Users upload a photo, choose a single-word style, and generate a transformed result through a React + Vite frontend and a FastAPI backend.
 
-The app currently runs in demo mode by default, which means the backend returns the uploaded image unchanged while keeping the prompt mapping, storage flow, and AI integration points ready for a future live model.
+The project supports both demo mode and live Vertex AI image editing. In local development you can still run safely in demo mode, while the deployed backend can run with live Vertex AI editing enabled.
 
 ## Features
 
@@ -12,8 +12,15 @@ The app currently runs in demo mode by default, which means the backend returns 
 - Anonymous daily usage limit to protect the MVP before login is added
 - FastAPI `/generate` endpoint with backend prompt mapping
 - Google Cloud Storage support for uploaded and generated images
-- Demo transform service plus a placeholder for future Vertex AI editing
+- Auto-resizing for oversized phone photos before generation
+- Live Vertex AI image editing with per-style guidance tuning
+- Structured usage logging for Cloud Logging and BigQuery export
 - Cloud Run-ready backend container
+
+## Live Deployment
+
+- Frontend: `https://onetap-ai.uc.r.appspot.com`
+- Backend: `https://magic-image-studio-api-486899779484.us-central1.run.app`
 
 ## Project Structure
 
@@ -91,6 +98,7 @@ VERTEX_LOCATION=us-central1
 VERTEX_MODEL=imagen-3.0-capability-001
 VERTEX_OUTPUT_MIME_TYPE=image/png
 VERTEX_GUIDANCE_SCALE=18
+VERTEX_GUIDANCE_SCALES={"cinematic":15,"magic":16,"viral":18,"fantasy":19,"meme":19}
 VERTEX_NEGATIVE_PROMPT=blurry, distorted, low quality, extra limbs, duplicated features, warped face, unreadable text, watermark, logo, frame
 VERTEX_SAFETY_FILTER_LEVEL=block_some
 VERTEX_PERSON_GENERATION=allow_adult
@@ -127,34 +135,37 @@ Tracked fields include:
 - `error_message`
 - `original_filename`
 - `file_size_bytes`
+- `original_image_width` and `original_image_height`
 - `image_width` and `image_height`
 - `prompt`
 - `stored_input_path`
 - `stored_output_path`
 - `output_filename`
 - `used_today`, `remaining_generations`, and `daily_limit`
-- `origin`, `user_agent`, `demo_mode`, `vertex_enabled`, and `model_name`
+- `origin`, `user_agent`, `demo_mode`, `vertex_enabled`, `model_name`, and `guidance_scale`
 
 This makes it much easier to answer questions like which styles are most used, which IPs hit limits, which failures are most common, and which storage objects belong to each request.
 
+The project now also supports exporting these usage logs from Cloud Logging into BigQuery for SQL-based reporting.
+
 ## Image Guardrails
 
-To control storage and future model costs, the backend rejects oversized uploads before processing:
+To control storage and future model costs, the backend enforces a `5 MB` upload limit and normalizes oversized images before generation:
 
 - Maximum file size: `5 MB`
-- Maximum image dimensions: `2048x2048`
-- Maximum resolution: `12 megapixels`
+- Working image dimensions: `2048x2048`
+- Working resolution: `12 megapixels`
 
-These values can be tuned with `MAX_UPLOAD_SIZE_MB`, `MAX_IMAGE_WIDTH`, `MAX_IMAGE_HEIGHT`, and `MAX_IMAGE_MEGAPIXELS`.
+If a user uploads a larger phone photo, the backend resizes it automatically to fit these limits instead of rejecting it outright. These values can be tuned with `MAX_UPLOAD_SIZE_MB`, `MAX_IMAGE_WIDTH`, `MAX_IMAGE_HEIGHT`, and `MAX_IMAGE_MEGAPIXELS`.
 
-## Demo Mode and Future AI Integration
+## Demo Mode and Vertex AI
 
 `backend/app/services/image_transform.py` currently contains two paths:
 
 - `DemoTransformService`, which returns the uploaded image unchanged
-- `VertexAITransformService`, which now calls Vertex AI Imagen image editing when live mode is enabled
+- `VertexAITransformService`, which calls Vertex AI Imagen image editing when live mode is enabled
 
-To enable a real model later:
+To enable live model editing:
 
 1. Enable the Vertex AI API in your Google Cloud project
 2. Set `DEMO_MODE=false`
@@ -163,6 +174,8 @@ To enable a real model later:
 5. Deploy with credentials that can call Vertex AI and read and write to GCS
 
 The backend uses the official Vertex AI Python SDK and the Imagen editing-capable model `imagen-3.0-capability-001`. Google’s current docs note that older Imagen 1 and 2 model IDs such as `imagegeneration@006` are deprecated and removed, so this project now uses the current supported editing model instead.
+
+Each style can also use its own `guidance_scale`, which helps balance how strongly the model transforms the image versus how closely it preserves the original subject.
 
 ## Google Cloud Storage
 
@@ -209,8 +222,32 @@ gcloud run deploy magic-image-studio-api \
   --set-env-vars DEMO_MODE=false,VERTEX_ENABLED=true,DAILY_GENERATION_LIMIT=10,GCS_BUCKET_NAME=YOUR_BUCKET_NAME,GOOGLE_CLOUD_PROJECT=YOUR_PROJECT_ID,VERTEX_MODEL=imagen-3.0-capability-001
 ```
 
+## Frontend Deployment
+
+The frontend can be deployed separately using the included App Engine config in `frontend/app.yaml`.
+
+Build and deploy from the `frontend` directory:
+
+```bash
+cd frontend
+npm install
+npm run build
+gcloud app deploy
+```
+
+## BigQuery Usage Analytics
+
+This project now supports exporting structured usage logs into BigQuery for SQL reporting.
+
+Example setup used in production:
+
+- Dataset: `onetap-ai.magic_image_usage`
+- Cloud Logging sink: `magic-image-usage-to-bigquery`
+
+After the sink is active and new events are generated, you can query exported usage logs with SQL in BigQuery.
+
 ## Notes
 
 - The frontend calls `POST /generate` with `FormData`, so image upload stays simple.
-- Prompt mapping, storage, transform logic, and usage limiting are intentionally separated to keep the project beginner-friendly.
-- Demo mode is intentional for MVP delivery. The UX, storage flow, and deployment path all work before live image editing is connected.
+- Prompt mapping, storage, transform logic, usage limiting, and usage logging are intentionally separated to keep the project beginner-friendly.
+- Demo mode still exists for safe local development, but the deployed app can now run with live Vertex AI image editing.
