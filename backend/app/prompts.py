@@ -1,23 +1,27 @@
 STYLE_PROMPTS = {
     "magic": (
-        "Transform the image into polished one-tap magic with luminous highlights, subtle spark effects, "
-        "soft glow, and whimsical depth. Preserve the original subject, pose, composition, and key identity details."
+        "Transform the image with an ethereal magical atmosphere. Add luminous highlights, soft glowing auras, "
+        "subtle floating spark particles, dreamy bloom, and whimsical depth. Preserve the original subject, pose, "
+        "composition, and key identity details."
     ),
     "viral": (
-        "Transform the image into a bold viral social-media visual with crisp contrast, vibrant color, bright focal points, "
-        "and scroll-stopping energy. Preserve the original subject, pose, composition, and key identity details."
+        "Transform the image into a bold social-media-ready visual with ultra-crisp detail, vibrant saturated color, "
+        "clean bright lighting, high contrast, and strong focal clarity. Preserve the original subject, pose, "
+        "composition, and key identity details."
     ),
     "cinematic": (
-        "Transform the image into a cinematic frame with dramatic lighting, filmic color grading, premium storytelling atmosphere, "
-        "and refined depth. Preserve the original subject, pose, composition, and key identity details."
+        "Transform the image into a cinematic movie still with dramatic lighting, filmic color grading, refined depth, "
+        "and shallow depth of field. Preserve the original subject, pose, composition, and key identity details."
     ),
     "fantasy": (
-        "Transform the image into fantasy-inspired artwork with enchanted mood, rich imaginative worldbuilding, elevated wonder, "
-        "and stylized magical detail. Preserve the original subject, pose, composition, and key identity details."
+        "Transform the image into high-fantasy inspired artwork with a mystical atmosphere, rich jewel-tone color, "
+        "enchanted ambient light, and stylized magical detail. Preserve the original subject, pose, composition, "
+        "and key identity details."
     ),
     "meme": (
-        "Transform the image into a playful meme-ready visual with comedic exaggeration, punchy framing, expressive energy, "
-        "and internet-native humor. Preserve the original subject, pose, composition, and key identity details."
+        "Transform the image into a playful meme-style visual with expressive reaction-image energy, punchy framing, "
+        "clean hard-light clarity, bold contrast, and slight comedic exaggeration without distorting anatomy. "
+        "Preserve the original subject, pose, composition, and key identity details."
     )
 }
 

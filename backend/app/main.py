@@ -10,7 +10,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, Response, Uploa
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from app.config import get_settings
 from app.models import GenerateResponse, HealthResponse
@@ -64,33 +64,58 @@ def get_client_identifier(request: Request) -> str:
     return "anonymous"
 
 
-def validate_image_dimensions(payload: bytes) -> tuple[int, int]:
+def normalize_uploaded_image(payload: bytes, content_type: str | None) -> tuple[bytes, str, int, int, int, int]:
     try:
-        with Image.open(BytesIO(payload)) as image:
-            width, height = image.size
+        with Image.open(BytesIO(payload)) as source_image:
+            image = ImageOps.exif_transpose(source_image)
+            original_width, original_height = image.size
     except UnidentifiedImageError as error:
         raise HTTPException(status_code=400, detail="The uploaded file is not a supported image.") from error
 
+    width, height = original_width, original_height
     megapixels = (width * height) / 1_000_000
-    if width > settings.max_image_width or height > settings.max_image_height:
-        raise HTTPException(
-            status_code=413,
-            detail=(
-                f"Image dimensions are too large. Maximum allowed size is "
-                f"{settings.max_image_width}x{settings.max_image_height} pixels."
-            )
-        )
+    exceeds_dimension_limit = width > settings.max_image_width or height > settings.max_image_height
+    exceeds_megapixel_limit = megapixels > settings.max_image_megapixels
 
-    if megapixels > settings.max_image_megapixels:
-        raise HTTPException(
-            status_code=413,
-            detail=(
-                f"Image resolution is too high. Maximum allowed resolution is "
-                f"{settings.max_image_megapixels} megapixels."
-            )
+    if exceeds_dimension_limit or exceeds_megapixel_limit:
+        resize_ratio = min(
+            settings.max_image_width / width,
+            settings.max_image_height / height,
+            (settings.max_image_megapixels / megapixels) ** 0.5 if megapixels > 0 else 1.0,
+            1.0
         )
+        resized_width = max(1, int(width * resize_ratio))
+        resized_height = max(1, int(height * resize_ratio))
+        image.thumbnail((resized_width, resized_height), Image.Resampling.LANCZOS)
+        width, height = image.size
 
-    return width, height
+        while (width * height) / 1_000_000 > settings.max_image_megapixels:
+            width = max(1, int(width * 0.95))
+            height = max(1, int(height * 0.95))
+            image = image.resize((width, height), Image.Resampling.LANCZOS)
+
+        output_content_type = content_type or "image/jpeg"
+        output_format = "JPEG"
+
+        if output_content_type == "image/png":
+            output_format = "PNG"
+        elif output_content_type == "image/webp":
+            output_format = "WEBP"
+        else:
+            if image.mode not in {"RGB", "L"}:
+                image = image.convert("RGB")
+            output_content_type = "image/jpeg"
+
+        buffer = BytesIO()
+        save_kwargs = {"format": output_format}
+        if output_format == "JPEG":
+            save_kwargs.update({"quality": 92, "optimize": True})
+        elif output_format == "WEBP":
+            save_kwargs.update({"quality": 92, "method": 6})
+        image.save(buffer, **save_kwargs)
+        return buffer.getvalue(), output_content_type, original_width, original_height, width, height
+
+    return payload, content_type or "image/jpeg", original_width, original_height, width, height
 
 
 def log_usage_event(event: dict) -> None:
@@ -157,7 +182,10 @@ async def generate_image(request: Request, file: UploadFile = File(...), style: 
         )
 
     try:
-        width, height = validate_image_dimensions(payload)
+        payload, content_type, original_width, original_height, width, height = normalize_uploaded_image(
+            payload,
+            file.content_type
+        )
     except HTTPException as error:
         log_usage_event(
             {
@@ -178,6 +206,8 @@ async def generate_image(request: Request, file: UploadFile = File(...), style: 
                 **base_event,
                 "status": "failed",
                 "file_size_bytes": len(payload),
+                "original_image_width": original_width,
+                "original_image_height": original_height,
                 "image_width": width,
                 "image_height": height,
                 "error_message": str(error),
@@ -197,6 +227,8 @@ async def generate_image(request: Request, file: UploadFile = File(...), style: 
                 **base_event,
                 "status": "blocked",
                 "file_size_bytes": len(payload),
+                "original_image_width": original_width,
+                "original_image_height": original_height,
                 "image_width": width,
                 "image_height": height,
                 "prompt": prompt,
@@ -215,7 +247,7 @@ async def generate_image(request: Request, file: UploadFile = File(...), style: 
     original_asset = storage_service.save_bytes(
         payload,
         original_filename=file.filename or "upload.png",
-        content_type=file.content_type,
+        content_type=content_type,
         prefix=settings.upload_prefix
     )
 
@@ -225,7 +257,7 @@ async def generate_image(request: Request, file: UploadFile = File(...), style: 
             prompt=prompt,
             style=style,
             filename=file.filename or "upload.png",
-            content_type=file.content_type
+            content_type=content_type
         )
     except NotImplementedError as error:
         log_usage_event(
@@ -233,6 +265,8 @@ async def generate_image(request: Request, file: UploadFile = File(...), style: 
                 **base_event,
                 "status": "failed",
                 "file_size_bytes": len(payload),
+                "original_image_width": original_width,
+                "original_image_height": original_height,
                 "image_width": width,
                 "image_height": height,
                 "prompt": prompt,
@@ -252,6 +286,8 @@ async def generate_image(request: Request, file: UploadFile = File(...), style: 
                 **base_event,
                 "status": "failed",
                 "file_size_bytes": len(payload),
+                "original_image_width": original_width,
+                "original_image_height": original_height,
                 "image_width": width,
                 "image_height": height,
                 "prompt": prompt,
@@ -277,6 +313,8 @@ async def generate_image(request: Request, file: UploadFile = File(...), style: 
             **base_event,
             "status": "success",
             "file_size_bytes": len(payload),
+            "original_image_width": original_width,
+            "original_image_height": original_height,
             "image_width": width,
             "image_height": height,
             "prompt": prompt,
