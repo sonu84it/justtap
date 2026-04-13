@@ -119,7 +119,9 @@ def normalize_uploaded_image(payload: bytes, content_type: str | None) -> tuple[
 
 
 def log_usage_event(event: dict) -> None:
-    logger.info(json.dumps(event, default=str))
+    serialized_event = json.dumps(event, default=str)
+    print(serialized_event, flush=True)
+    logger.info(serialized_event)
 
 
 def resolve_guidance_scale(style: str) -> float:
