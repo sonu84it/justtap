@@ -10,7 +10,14 @@ const distDir = path.join(currentDir, "dist");
 
 app.use(express.static(distDir));
 
-app.get("*", (_request, response) => {
+app.get("*", (request, response) => {
+  // Only app routes should fall back to index.html. Missing asset URLs must
+  // return 404 so browsers do not try to execute HTML as JavaScript.
+  if (path.extname(request.path)) {
+    response.status(404).end();
+    return;
+  }
+
   response.sendFile(path.join(distDir, "index.html"));
 });
 

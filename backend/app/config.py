@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     )
     vertex_safety_filter_level: str = "block_some"
     vertex_person_generation: str = "allow_adult"
+    gemini_enabled: bool = False
+    gemini_location: str = "global"
+    gemini_model: str = "gemini-2.5-flash-image"
+    gemini_output_mime_type: str = "image/png"
+    gemini_temperature: float = 1.0
+    gemini_aspect_ratio: str = "1:1"
 
     model_config = SettingsConfigDict(
         env_file=".env",

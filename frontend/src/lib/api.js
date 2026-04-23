@@ -43,10 +43,17 @@ export async function fetchHealth() {
   return readJsonResponse(response);
 }
 
-export async function generateMagicImage({ file, style }) {
+export async function generateMagicImage({ file, style, mode = "creative", prompt = "", aspectRatio = "1:1" }) {
   const formData = new FormData();
-  formData.append("file", file);
   formData.append("style", style);
+  formData.append("mode", mode);
+  formData.append("aspect_ratio", aspectRatio);
+  if (file) {
+    formData.append("file", file);
+  }
+  if (prompt) {
+    formData.append("prompt", prompt);
+  }
 
   let response;
   try {

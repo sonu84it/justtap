@@ -9,6 +9,19 @@ const STYLE_OPTIONS = [
   { id: "meme", label: "Meme", accent: "Internet chaos", icon: "🤡" }
 ];
 
+const MODE_OPTIONS = [
+  { id: "creative", label: "Creative", accent: "Prompt + Gemini" },
+  { id: "preserve", label: "Preserve", accent: "Upload + Imagen" }
+];
+
+const ASPECT_RATIO_OPTIONS = [
+  { id: "1:1", label: "Square" },
+  { id: "3:4", label: "Portrait" },
+  { id: "4:3", label: "Classic" },
+  { id: "9:16", label: "Story" },
+  { id: "16:9", label: "Wide" }
+];
+
 const PREVIEW_TABS = [
   { id: "before", label: "Original" },
   { id: "after", label: "Result" }
@@ -61,8 +74,10 @@ function PreviewPanel({ title, imageUrl, emptyCopy, loading = false, action = nu
 export default function App() {
   const fileInputRef = useRef(null);
   const beforeObjectUrlRef = useRef("");
+  const [generationMode, setGenerationMode] = useState("creative");
   const [selectedStyle, setSelectedStyle] = useState("magic");
   const [selectedFile, setSelectedFile] = useState(null);
+  const [aspectRatio, setAspectRatio] = useState("1:1");
   const [beforeUrl, setBeforeUrl] = useState("");
   const [afterUrl, setAfterUrl] = useState("");
   const [resultName, setResultName] = useState("");
@@ -112,7 +127,13 @@ export default function App() {
   }, []);
 
   const canGenerate = useMemo(
-    () => Boolean(selectedFile) && Boolean(selectedStyle) && !isLoading,
+    () => {
+      if (!selectedStyle || isLoading) {
+        return false;
+      }
+
+      return Boolean(selectedFile);
+    },
     [selectedFile, selectedStyle, isLoading]
   );
 
@@ -145,7 +166,7 @@ export default function App() {
   };
 
   const handleGenerate = async () => {
-    if (!selectedFile) {
+    if (!canGenerate) {
       return;
     }
 
@@ -157,7 +178,9 @@ export default function App() {
     try {
       const payload = await generateMagicImage({
         file: selectedFile,
-        style: selectedStyle
+        style: selectedStyle,
+        mode: generationMode,
+        aspectRatio
       });
 
       setAfterUrl(payload.result_image_url);
@@ -183,7 +206,7 @@ export default function App() {
 
   const visibleMobileImage = activePreview === "after" ? afterUrl : beforeUrl;
   const visibleMobileCopy = activePreview === "after"
-    ? "Your transformed result will appear here after generation."
+    ? "Your generated result will appear here after creation."
     : "Upload a photo to preview it here before generating.";
 
   return (
@@ -199,10 +222,10 @@ export default function App() {
                 <p className="text-lg font-semibold tracking-tight">JustTap</p>
                 <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">One-word image styling</p>
                 <h1 className="mt-2 text-lg font-semibold tracking-tight text-neutral-50 sm:text-xl">
-                  Turn any photo into one-tap magic.
+                  Style a photo or generate a fresh concept.
                 </h1>
                 <p className="mt-1 max-w-2xl text-sm leading-5 text-neutral-400">
-                  Upload once, choose a vibe, and create polished one-tap magic without writing prompts or learning complex tools.
+                  Upload a photo, then choose Creative for bolder Gemini edits or Preserve for steadier Imagen transformations.
                 </p>
               </div>
             </div>
@@ -216,8 +239,31 @@ export default function App() {
         </header>
 
         <main className="grid flex-1 gap-3 lg:min-h-0 lg:grid-cols-[340px_minmax(0,1fr)] lg:overflow-hidden">
-          <section className="flex flex-col rounded-[28px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] p-4 shadow-[0_30px_100px_rgba(0,0,0,0.4)] sm:p-5 lg:min-h-0 lg:overflow-hidden">
+          <section className="flex flex-col rounded-[28px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] p-4 shadow-[0_30px_100px_rgba(0,0,0,0.4)] sm:p-5 lg:min-h-0 lg:overflow-y-auto lg:pr-2">
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
+              <div className="rounded-3xl border border-white/10 bg-black/20 p-3.5">
+                <div className="mb-2 flex items-center justify-between">
+                  <p className="text-[13px] font-semibold text-neutral-100">Generation mode</p>
+                  <p className="text-[11px] text-neutral-500">Smart model routing</p>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {MODE_OPTIONS.map((option) => (
+                    <button
+                      key={option.id}
+                      onClick={() => setGenerationMode(option.id)}
+                      className={`rounded-2xl border px-3 py-2.5 text-left transition-all ${
+                        generationMode === option.id
+                          ? "border-violet-400 bg-violet-500/10 text-violet-100"
+                          : "border-white/10 bg-white/[0.03] text-neutral-200 hover:border-white/20 hover:bg-white/[0.06]"
+                      }`}
+                    >
+                      <p className="text-[13px] font-semibold">{option.label}</p>
+                      <p className="mt-0.5 text-[10px] leading-4 text-neutral-500">{option.accent}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <button
                 onClick={() => fileInputRef.current?.click()}
                 className={`flex min-h-[96px] flex-col items-center justify-center rounded-3xl border border-dashed px-4 py-4 text-center transition-all ${
@@ -260,6 +306,31 @@ export default function App() {
               </div>
             </div>
 
+            {generationMode === "creative" ? (
+              <div className="mt-3 rounded-3xl border border-white/10 bg-black/20 p-3.5">
+                <div className="mb-2 flex items-center justify-between">
+                  <p className="text-[13px] font-semibold text-neutral-100">Aspect ratio</p>
+                  <p className="text-[11px] text-neutral-500">Gemini output shape</p>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {ASPECT_RATIO_OPTIONS.map((option) => (
+                    <button
+                      key={option.id}
+                      onClick={() => setAspectRatio(option.id)}
+                      className={`rounded-2xl border px-3 py-2 text-left transition-all ${
+                        aspectRatio === option.id
+                          ? "border-violet-400 bg-violet-500/10 text-violet-100"
+                          : "border-white/10 bg-white/[0.03] text-neutral-200 hover:border-white/20 hover:bg-white/[0.06]"
+                      }`}
+                    >
+                      <p className="text-[13px] font-semibold">{option.id}</p>
+                      <p className="mt-0.5 text-[10px] leading-4 text-neutral-500">{option.label}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
             <input
               ref={fileInputRef}
               className="hidden"
@@ -292,12 +363,12 @@ export default function App() {
               {isLoading ? (
                 <>
                   <span className="mr-3 inline-block h-5 w-5 animate-spin rounded-full border-2 border-neutral-400 border-t-neutral-900" />
-                  Generating your image
+                  {generationMode === "creative" ? "Generating your concept" : "Generating your image"}
                 </>
               ) : (
                 <>
                   <SparklesIcon />
-                  Generate {selectedStyleMeta.label}
+                  {generationMode === "creative" ? `Create ${selectedStyleMeta.label}` : `Generate ${selectedStyleMeta.label}`}
                 </>
               )}
             </button>
@@ -334,7 +405,7 @@ export default function App() {
                 title="Result"
                 imageUrl={afterUrl}
                 loading={isLoading}
-                emptyCopy="Choose a style and generate to see the transformed image here."
+                emptyCopy="Choose a mode and style, then generate to see the transformed image here."
                 action={afterUrl ? (
                   <a
                     href={afterUrl}

@@ -14,7 +14,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from app.config import get_settings
 from app.models import GenerateResponse, HealthResponse
-from app.prompts import get_style_prompt
+from app.prompts import get_creative_prompt, get_style_prompt
 from app.services.image_transform import get_transform_service
 from app.services.storage import StorageService
 from app.services.usage_limits import DailyUsageLimiter
@@ -128,92 +128,144 @@ def resolve_guidance_scale(style: str) -> float:
     return settings.vertex_guidance_scales.get(style, settings.vertex_guidance_scale)
 
 
+def resolve_generation_mode(mode: str) -> str:
+    normalized = (mode or "preserve").strip().lower()
+    if normalized not in {"preserve", "creative"}:
+        raise HTTPException(status_code=400, detail="Unsupported mode. Use 'preserve' or 'creative'.")
+    return normalized
+
+
+def resolve_model_name(mode: str) -> str:
+    return settings.gemini_model if mode == "creative" else settings.vertex_model
+
+
+def resolve_aspect_ratio(mode: str, aspect_ratio: str | None) -> str:
+    normalized = (aspect_ratio or "").strip() or settings.gemini_aspect_ratio
+    if mode == "preserve":
+        return "source"
+
+    supported = {"1:1", "3:2", "2:3", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"}
+    if normalized not in supported:
+        raise HTTPException(status_code=400, detail="Unsupported aspect ratio for creative mode.")
+    return normalized
+
+
 @app.post("/generate", response_model=GenerateResponse)
-async def generate_image(request: Request, file: UploadFile = File(...), style: str = Form(...)) -> GenerateResponse:
+async def generate_image(
+    request: Request,
+    file: UploadFile | None = File(None),
+    style: str = Form(...),
+    mode: str = Form("preserve"),
+    prompt: str | None = Form(None),
+    aspect_ratio: str | None = Form(None),
+) -> GenerateResponse:
     request_id = uuid4().hex
     started_at = time.perf_counter()
     client_ip = get_client_identifier(request)
+    mode = resolve_generation_mode(mode)
+    resolved_aspect_ratio = resolve_aspect_ratio(mode, aspect_ratio)
     guidance_scale = resolve_guidance_scale(style)
     base_event = {
         "event_type": "image_generation",
         "request_id": request_id,
         "client_ip": client_ip,
+        "mode": mode,
         "style_selected": style,
-        "original_filename": file.filename or "upload.png",
-        "content_type": file.content_type,
+        "original_filename": file.filename if file else None,
+        "content_type": file.content_type if file else None,
         "origin": request.headers.get("origin"),
         "user_agent": request.headers.get("user-agent"),
         "vertex_enabled": settings.vertex_enabled,
+        "gemini_enabled": settings.gemini_enabled,
         "demo_mode": settings.demo_mode,
-        "model_name": settings.vertex_model,
+        "model_name": resolve_model_name(mode),
+        "aspect_ratio": resolved_aspect_ratio,
         "guidance_scale": guidance_scale,
     }
 
-    if not file.content_type or not file.content_type.startswith("image/"):
-        log_usage_event(
-            {
-                **base_event,
-                "status": "failed",
-                "error_message": "Please upload a valid image file.",
-                "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
-            }
-        )
-        raise HTTPException(status_code=400, detail="Please upload a valid image file.")
+    payload: bytes | None = None
+    content_type: str | None = None
+    original_width: int | None = None
+    original_height: int | None = None
+    width: int | None = None
+    height: int | None = None
 
-    payload = await file.read()
-    if not payload:
-        log_usage_event(
-            {
-                **base_event,
-                "status": "failed",
-                "file_size_bytes": 0,
-                "error_message": "The uploaded file is empty.",
-                "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
-            }
-        )
-        raise HTTPException(status_code=400, detail="The uploaded file is empty.")
+    if file is not None and file.filename:
+        if not file.content_type or not file.content_type.startswith("image/"):
+            log_usage_event(
+                {
+                    **base_event,
+                    "status": "failed",
+                    "error_message": "Please upload a valid image file.",
+                    "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                }
+            )
+            raise HTTPException(status_code=400, detail="Please upload a valid image file.")
 
-    max_bytes = settings.max_upload_size_mb * 1024 * 1024
-    if len(payload) > max_bytes:
+        payload = await file.read()
+        if not payload:
+            log_usage_event(
+                {
+                    **base_event,
+                    "status": "failed",
+                    "file_size_bytes": 0,
+                    "error_message": "The uploaded file is empty.",
+                    "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                }
+            )
+            raise HTTPException(status_code=400, detail="The uploaded file is empty.")
+
+        max_bytes = settings.max_upload_size_mb * 1024 * 1024
+        if len(payload) > max_bytes:
+            log_usage_event(
+                {
+                    **base_event,
+                    "status": "failed",
+                    "file_size_bytes": len(payload),
+                    "error_message": f"File is too large. The limit is {settings.max_upload_size_mb} MB.",
+                    "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                }
+            )
+            raise HTTPException(
+                status_code=413,
+                detail=f"File is too large. The limit is {settings.max_upload_size_mb} MB."
+            )
+
+        try:
+            payload, content_type, original_width, original_height, width, height = normalize_uploaded_image(
+                payload,
+                file.content_type
+            )
+        except HTTPException as error:
+            log_usage_event(
+                {
+                    **base_event,
+                    "status": "failed",
+                    "file_size_bytes": len(payload),
+                    "error_message": error.detail,
+                    "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                }
+            )
+            raise
+    elif mode in {"preserve", "creative"}:
         log_usage_event(
             {
                 **base_event,
                 "status": "failed",
-                "file_size_bytes": len(payload),
-                "error_message": f"File is too large. The limit is {settings.max_upload_size_mb} MB.",
+                "error_message": f"{mode.capitalize()} mode requires an uploaded image.",
                 "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
             }
         )
-        raise HTTPException(
-            status_code=413,
-            detail=f"File is too large. The limit is {settings.max_upload_size_mb} MB."
-        )
+        raise HTTPException(status_code=400, detail=f"{mode.capitalize()} mode requires an uploaded image.")
 
     try:
-        payload, content_type, original_width, original_height, width, height = normalize_uploaded_image(
-            payload,
-            file.content_type
-        )
-    except HTTPException as error:
-        log_usage_event(
-            {
-                **base_event,
-                "status": "failed",
-                "file_size_bytes": len(payload),
-                "error_message": error.detail,
-                "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
-            }
-        )
-        raise
-
-    try:
-        prompt = get_style_prompt(style)
+        resolved_prompt = get_creative_prompt(style, prompt) if mode == "creative" else get_style_prompt(style)
     except ValueError as error:
         log_usage_event(
             {
                 **base_event,
                 "status": "failed",
-                "file_size_bytes": len(payload),
+                "file_size_bytes": len(payload) if payload is not None else 0,
                 "original_image_width": original_width,
                 "original_image_height": original_height,
                 "image_width": width,
@@ -234,12 +286,12 @@ async def generate_image(request: Request, file: UploadFile = File(...), style: 
             {
                 **base_event,
                 "status": "blocked",
-                "file_size_bytes": len(payload),
+                "file_size_bytes": len(payload) if payload is not None else 0,
                 "original_image_width": original_width,
                 "original_image_height": original_height,
                 "image_width": width,
                 "image_height": height,
-                "prompt": prompt,
+                "prompt": resolved_prompt,
                 "used_today": usage_decision.used_today,
                 "remaining_generations": usage_decision.remaining_generations,
                 "daily_limit": usage_decision.daily_limit,
@@ -252,36 +304,40 @@ async def generate_image(request: Request, file: UploadFile = File(...), style: 
             detail=limit_message
         )
 
-    original_asset = storage_service.save_bytes(
-        payload,
-        original_filename=file.filename or "upload.png",
-        content_type=content_type,
-        prefix=settings.upload_prefix
-    )
+    original_asset = None
+    if payload is not None and content_type is not None:
+        original_asset = storage_service.save_bytes(
+            payload,
+            original_filename=file.filename or "upload.png",
+            content_type=content_type,
+            prefix=settings.upload_prefix
+        )
 
     try:
         transform_result = transform_service.transform(
             image_bytes=payload,
-            prompt=prompt,
+            prompt=resolved_prompt,
             style=style,
-            filename=file.filename or "upload.png",
-            content_type=content_type
+            filename=file.filename if file else None,
+            content_type=content_type,
+            mode=mode,
+            aspect_ratio=resolved_aspect_ratio,
         )
     except NotImplementedError as error:
         log_usage_event(
             {
                 **base_event,
                 "status": "failed",
-                "file_size_bytes": len(payload),
+                "file_size_bytes": len(payload) if payload is not None else 0,
                 "original_image_width": original_width,
                 "original_image_height": original_height,
                 "image_width": width,
                 "image_height": height,
-                "prompt": prompt,
+                "prompt": resolved_prompt,
                 "used_today": usage_decision.used_today,
                 "remaining_generations": usage_decision.remaining_generations,
                 "daily_limit": usage_decision.daily_limit,
-                "stored_input_path": original_asset.path,
+                "stored_input_path": original_asset.path if original_asset else None,
                 "error_message": str(error),
                 "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
             }
@@ -293,16 +349,16 @@ async def generate_image(request: Request, file: UploadFile = File(...), style: 
             {
                 **base_event,
                 "status": "failed",
-                "file_size_bytes": len(payload),
+                "file_size_bytes": len(payload) if payload is not None else 0,
                 "original_image_width": original_width,
                 "original_image_height": original_height,
                 "image_width": width,
                 "image_height": height,
-                "prompt": prompt,
+                "prompt": resolved_prompt,
                 "used_today": usage_decision.used_today,
                 "remaining_generations": usage_decision.remaining_generations,
                 "daily_limit": usage_decision.daily_limit,
-                "stored_input_path": original_asset.path,
+                "stored_input_path": original_asset.path if original_asset else None,
                 "error_message": error_message,
                 "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
             }
@@ -320,16 +376,18 @@ async def generate_image(request: Request, file: UploadFile = File(...), style: 
         {
             **base_event,
             "status": "success",
-            "file_size_bytes": len(payload),
+            "provider": transform_result.provider,
+            "model_name": transform_result.model_name,
+            "file_size_bytes": len(payload) if payload is not None else 0,
             "original_image_width": original_width,
             "original_image_height": original_height,
             "image_width": width,
             "image_height": height,
-            "prompt": prompt,
+            "prompt": resolved_prompt,
             "used_today": usage_decision.used_today,
             "remaining_generations": usage_decision.remaining_generations,
             "daily_limit": usage_decision.daily_limit,
-            "stored_input_path": original_asset.path,
+            "stored_input_path": original_asset.path if original_asset else None,
             "stored_output_path": result_asset.path,
             "output_filename": Path(result_asset.path).name,
             "output_content_type": result_asset.content_type,
@@ -339,10 +397,17 @@ async def generate_image(request: Request, file: UploadFile = File(...), style: 
     )
 
     return GenerateResponse(
+        mode=mode,
+        provider=transform_result.provider,
+        model_name=transform_result.model_name,
+        aspect_ratio=transform_result.aspect_ratio,
         style=style,
-        prompt=prompt,
+        prompt=resolved_prompt,
         message=transform_result.message,
-        original_image_url=build_asset_url(request, original_asset.path, original_asset.url, original_asset.storage_mode),
+        original_image_url=(
+            build_asset_url(request, original_asset.path, original_asset.url, original_asset.storage_mode)
+            if original_asset else None
+        ),
         result_image_url=build_asset_url(request, result_asset.path, result_asset.url, result_asset.storage_mode),
         output_filename=Path(result_asset.path).name,
         content_type=result_asset.content_type,

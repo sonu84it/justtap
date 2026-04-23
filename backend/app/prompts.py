@@ -25,10 +25,19 @@ STYLE_PROMPTS = {
     )
 }
 
-
 def get_style_prompt(style: str) -> str:
     try:
         return STYLE_PROMPTS[style]
     except KeyError as error:
         supported = ", ".join(STYLE_PROMPTS.keys())
         raise ValueError(f"Unsupported style '{style}'. Supported styles: {supported}.") from error
+
+
+def get_creative_prompt(style: str, custom_prompt: str | None = None) -> str:
+    base_prompt = get_style_prompt(style)
+    cleaned_prompt = (custom_prompt or "").strip()
+    prompt_prefix = f"{cleaned_prompt} " if cleaned_prompt else ""
+    return (
+        f"{prompt_prefix}{base_prompt} "
+        "Allow more stylized, imaginative, and visually dramatic changes than preserve mode while still keeping the core subject recognizable."
+    )

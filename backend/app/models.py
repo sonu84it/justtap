@@ -8,10 +8,14 @@ class HealthResponse(BaseModel):
 
 
 class GenerateResponse(BaseModel):
+    mode: str
+    provider: str
+    model_name: str
+    aspect_ratio: str
     style: str
     prompt: str
     message: str
-    original_image_url: str
+    original_image_url: str | None
     result_image_url: str
     output_filename: str
     content_type: str
